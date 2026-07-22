@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>临床用药洞察看板</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18/dist/xlsx.full.min.js"></script>
+<script src="app.compute.js"></script>
+<style>
+  :root{ --bg:#f5f7fa; --card:#fff; --line:#e3e8ef; --txt:#1f2933; --muted:#6b7785; --prim:#2563eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Microsoft YaHei",Segoe UI,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+  header{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px}
+  header h1{margin:0;font-size:18px}
+  header p{margin:4px 0 0;color:var(--muted);font-size:12px}
+  .wrap{padding:20px 24px;max-width:1280px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+  .card h2{margin:0 0 12px;font-size:15px;border-left:3px solid var(--prim);padding-left:8px}
+  .row{display:flex;flex-wrap:wrap;gap:14px}
+  .field{flex:1;min-width:200px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  input,select,textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:#fff;color:var(--txt)}
+  textarea{font-family:monospace;resize:vertical}
+  .chk{display:flex;flex-wrap:wrap;gap:10px}
+  .chk label{display:flex;align-items:center;gap:4px;margin:0;color:var(--txt);font-size:13px;flex:0 0 auto}
+  .chk input{width:auto}
+  button{background:var(--prim);color:#fff;border:none;padding:9px 16px;border-radius:6px;font-size:13px;cursor:pointer}
+  button.sec{background:#fff;color:var(--prim);border:1px solid var(--prim)}
+  button:hover{opacity:.9}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left}
+  th{background:#f0f4f8;color:var(--muted);font-weight:600}
+  .tag{padding:1px 8px;border-radius:10px;font-size:11px;color:#fff;display:inline-block}
+  .t-opinion{background:var(--ok)} .t-support{background:var(--warn)} .t-potential{background:var(--prim)} .t-low{background:#94a3b8}
+  .trend-up{color:var(--ok)} .trend-down{color:var(--bad)} .trend-new{color:var(--prim)} .trend-lost{color:#94a3b8}
+  .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .stat{flex:1;min-width:120px;background:#f0f4f8;border-radius:8px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:22px}
+  .summary{background:#eef4ff;border:1px solid #cfe0ff;border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px;line-height:1.6}
+  #quadrant{width:100%;height:560px}
+  .radioset{display:flex;gap:16px;margin:6px 0}
+  .radioset label{display:flex;align-items:center;gap:5px;color:var(--txt);font-size:13px;margin:0}
+  .radioset input{width:auto}
+  .err{color:var(--bad);font-size:12px;margin-top:6px}
+  .muted{color:var(--muted)}
+  .ind-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:4px}
+  .ind-tbl th,.ind-tbl td{border:1px solid var(--line);padding:4px 6px;text-align:left}
+  .ind-tbl th{background:#f0f4f8;color:var(--muted);font-weight:600}
+  .ind-tbl input{width:100%;padding:5px 7px;border:1px solid var(--line);border-radius:5px;font-size:13px}
+  .ind-tbl .ind-del{background:#fff;color:var(--bad);border:1px solid var(--bad);border-radius:5px;cursor:pointer;padding:2px 8px;width:auto}
+  .map-editor{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px}
+</style>
+</head>
+<body>
+<header>
+  <h1>临床用药洞察看板</h1>
+  <p>导入药房销售明细 → 自动计算「医生分层 + 机会市场」· 供销售 / 市场部决策 · 数据仅在本地浏览器处理，不离机</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>1. 数据导入</h2>
+    <div class="row">
+      <div class="field">
+        <label>上传销售明细 (Excel / CSV)</label>
+        <input type="file" id="file" accept=".xlsx,.xls,.csv" />
+        <div class="hint">列名会被自动识别并映射到标准字段；也可点「加载示例数据」先体验。</div>
+      </div>
+      <div class="field" style="flex:0 0 auto;display:flex;align-items:flex-end;gap:10px">
+        <button class="sec" id="btnDemo">加载示例数据</button>
+        <button id="btnRun">运行分析</button>
+      </div>
+    </div>
+    <div id="dataStatus" class="hint"></div>
+  </div>
+
+  <div class="card" id="mapCard" style="display:none">
+    <h2>2. 列映射（底表列 → 标准字段）</h2>
+    <div id="mapTable"></div>
+    <div style="margin-top:10px">
+      <button class="sec" id="btnRefresh">刷新字段选项</button>
+      <span class="hint" style="margin-left:8px">若修改映射后本品/适应症下拉仍为空，点此手动刷新。</span>
+    </div>
+    <div class="hint">红色为必填；真实底表建议：销售日期→销售时间、通用名→商品名称、销量数量→转化后数量。</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 计算配置</h2>
+    <div class="row">
+      <div class="field">
+        <label>时间窗口 · 起始年月</label>
+        <input type="month" id="startYM" value="2026-01" />
+      </div>
+      <div class="field">
+        <label>时间窗口 · 结束年月</label>
+        <input type="month" id="endYM" value="2026-06" />
+      </div>
+      <div class="field">
+        <label>分析品种（本品）</label>
+        <select id="ownProduct"></select>
+      </div>
+      <div class="field">
+        <label>科室范围（归并后的标准名）</label>
+        <select id="deptFilter"></select>
+      </div>
+      <div class="field">
+        <label>高值分位阈值（%）</label>
+        <input type="number" id="topPct" value="30" min="5" max="50" />
+      </div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>适应症范围（归并后的标准名，可多选；一个都不勾=全部适应症）</label>
+      <div class="chk" id="indChk"></div>
+      <div class="row" style="margin-top:6px;gap:10px">
+        <button class="sec" id="btnIndAll" type="button">全选</button>
+        <button class="sec" id="btnIndNone" type="button">清空</button>
+      </div>
+      <div class="hint">勾选多个适应症时，四象限与机会市场会同时纳入这些适应症；一个都不勾即代表全部。</div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>竞品范围（机会市场参考品种，可多选；默认全部竞品）</label>
+      <div class="chk" id="compChk"></div>
+      <div class="hint">切换「分析品种」后会自动刷新此列表；取消勾选则机会市场不再纳入该品种。</div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>去重患者字段（多选，组合键 AND：所选字段全部相同才算同一人）</label>
+      <div class="chk" id="dedupChk"></div>
+      <div class="hint">建议默认仅勾 oneid；开票抬头 / 药房名称属机构维度，一般不并入患者去重。</div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>适应症归并映射（关键字 → 标准大区/适应症；在线维护，自动本地保存）</label>
+      <div class="map-editor" id="indMapEditor"></div>
+      <div class="row" style="margin-top:8px;gap:10px">
+        <button class="sec" id="btnAddInd" type="button">+ 新增映射行</button>
+        <button class="sec" id="btnImportInd" type="button">导入数据中全部适应症</button>
+        <button class="sec" id="btnSaveInd" type="button">保存映射（本地）</button>
+        <button class="sec" id="btnResetInd" type="button">恢复默认映射</button>
+      </div>
+      <div id="indPreview" class="hint" style="margin-top:8px"></div>
+      <div class="hint">每行「关键字=标准名」，含关键字即归并（按顺序匹配，更具体放前面）。大区示例：皮科 / 关节 / 消化。修改后点「保存映射」可下次自动加载；下方分布预览可核对覆盖情况。</div>
+      <textarea id="indMap" style="display:none"></textarea>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label style="font-weight:600">机构 / 医生 / 科室 清洗映射（在线维护 · 自动本地保存）</label>
+      <div class="hint" style="margin-bottom:6px">这三个同属一家机构的实体维度，放在一起清洗：每行「关键字=标准名」，含关键字即归并（更具体放前面）。上传数据后，表中会自动列出数据中出现的全部值，把「标准名」改成相同值即可合并同类（如 张伟(主任)→张伟、A院→A医院、皮肤科门诊→皮肤科）。</div>
+
+      <div style="margin-bottom:12px">
+        <label style="font-size:13px">科室归并映射</label>
+        <div class="map-editor" id="deptMapEditor"></div>
+        <div class="row" style="margin-top:6px;gap:10px">
+          <button class="sec" id="btnAddDept" type="button">+ 新增映射行</button>
+          <button class="sec" id="btnImportDept" type="button">导入数据中全部科室</button>
+          <button class="sec" id="btnSaveDept" type="button">保存映射（本地）</button>
+          <button class="sec" id="btnResetDept" type="button">恢复默认映射</button>
+        </div>
+        <div id="deptPreview" class="hint" style="margin-top:6px"></div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="font-size:13px">医院清洗映射</label>
+        <div class="map-editor" id="hospMapEditor"></div>
+        <div class="row" style="margin-top:6px;gap:10px">
+          <button class="sec" id="btnAddHosp" type="button">+ 新增映射行</button>
+          <button class="sec" id="btnImportHosp" type="button">导入数据中全部医院</button>
+          <button class="sec" id="btnSaveHosp" type="button">保存映射（本地）</button>
+          <button class="sec" id="btnResetHosp" type="button">恢复默认映射</button>
+        </div>
+        <div id="hospPreview" class="hint" style="margin-top:6px"></div>
+      </div>
+
+      <div style="margin-bottom:6px">
+        <label style="font-size:13px">医生清洗映射</label>
+        <div class="map-editor" id="docMapEditor"></div>
+        <div class="row" style="margin-top:6px;gap:10px">
+          <button class="sec" id="btnAddDoc" type="button">+ 新增映射行</button>
+          <button class="sec" id="btnImportDoc" type="button">导入数据中全部医生</button>
+          <button class="sec" id="btnSaveDoc" type="button">保存映射（本地）</button>
+          <button class="sec" id="btnResetDoc" type="button">恢复默认映射</button>
+        </div>
+        <div id="docPreview" class="hint" style="margin-top:6px"></div>
+      </div>
+
+      <textarea id="deptMap" style="display:none"></textarea>
+      <textarea id="hospMap" style="display:none"></textarea>
+      <textarea id="docMap" style="display:none"></textarea>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label><input type="checkbox" id="mask" style="width:auto;margin-right:6px" />对医生 / 科室 / 医院名称脱敏（对外展示用）</label>
+    </div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <h2>4. 医生分层（本品 · 四象限）</h2>
+    <div id="diag" class="hint" style="margin-bottom:10px"></div>
+    <div class="stats" id="stats"></div>
+    <div id="quadrant"></div>
+    <div id="docTable"></div>
+
+    <h2 style="margin-top:22px">5. 机会市场（同适应症）</h2>
+    <div class="radioset" id="marketToggle">
+      <label><input type="radio" name="mk" value="incl" checked /> 含本品整体（本品+所选竞品）</label>
+      <label><input type="radio" name="mk" value="excl" /> 未含本品（仅所选竞品）</label>
+    </div>
+    <div class="summary" id="marketSummary"></div>
+    <div id="marketTable"></div>
+
+    <h2 style="margin-top:22px">6. 医院与品种分析</h2>
+    <div class="hint" style="margin-bottom:10px">尊重当前时间窗口 / 适应症(多选) / 科室筛选，展示范围内<b>全部品种</b>（含本品与竞品）的医院与医生分布。</div>
+    <div class="row">
+      <div class="field" style="flex:0 0 160px">
+        <label>TOP 医院数量</label>
+        <select id="topNHosp">
+          <option value="3" selected>3</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+          <option value="9999">全部</option>
+        </select>
+      </div>
+      <div class="field" style="flex:0 0 160px">
+        <label>排序维度</label>
+        <select id="hospSort">
+          <option value="patients">患者数</option>
+          <option value="boxes">销量(盒)</option>
+          <option value="dot">DOT</option>
+        </select>
+      </div>
+      <div class="field" style="flex:1;min-width:200px">
+        <label>下钻医院（医生×品种明细 + 该院品种占比）</label>
+        <select id="hospDrill"></select>
+      </div>
+    </div>
+    <div class="stats" id="hospStats"></div>
+    <div class="row">
+      <div id="hospBar" style="flex:2;height:360px"></div>
+      <div id="prodPie" style="flex:1;height:360px"></div>
+    </div>
+    <div id="prodTable" style="margin-top:8px"></div>
+    <h3 style="margin:18px 0 4px;font-size:14px">各适应症占比分布（销量 / DOT / 患者数）</h3>
+    <div class="row">
+      <div id="indPie" style="flex:1;height:340px"></div>
+    </div>
+    <div id="indTable" style="margin-top:8px"></div>
+    <h3 style="margin:18px 0 4px;font-size:14px">医院 - 医生 - 品种 - 适应症 明细（销量 / DOT / 患者数）</h3>
+    <div id="hospDetail"></div>
+
+    <div class="row" style="margin-top:14px">
+      <button class="sec" id="btnExport">导出结果 (Excel)</button>
+    </div>
+  </div>
+
+  <div id="errBox" class="err"></div>
+</div>
+
+<script>
+const STD = ['销售日期','医疗单位','处方科室','处方医生','通用名','适应症','销量数量','oneid','会员电话','会员号','开票抬头','会员姓名','药房名称'];
+const REQ = ['销售日期','医疗单位','处方科室','处方医生','通用名','适应症','销量数量'];
+let rawData = null, headers = [], mapping = {};
+const DEDUP_OPTS = ['oneid','会员电话','会员号','开票抬头','会员姓名','药房名称'];
+let lastResult = null;
+const $ = id => document.getElementById(id);
+function setErr(m){ $('errBox').textContent = m || ''; }
+
+/* ---------- 适应症映射在线维护 ---------- */
+const DEFAULT_IND_MAP = `特应性=特应性皮炎
+AD=特应性皮炎
+银屑=银屑病
+斑块=银屑病
+类风湿=类风湿关节炎
+RA=类风湿关节炎
+强直=强直性脊柱炎
+AS=强直性脊柱炎
+关节炎=关节炎
+鼻窦=过敏性鼻炎/鼻窦炎
+鼻炎=过敏性鼻炎/鼻窦炎
+过敏=过敏性鼻炎/鼻窦炎
+哮喘=哮喘/COPD
+COPD=哮喘/COPD
+慢阻肺=哮喘/COPD
+阻塞=哮喘/COPD
+克罗恩=炎症性肠病
+溃结=炎症性肠病
+结肠=炎症性肠病
+类天疱疮=大疱性皮肤病
+天疱疮=大疱性皮肤病
+荨麻疹=荨麻疹
+皮炎=特应性皮炎`;
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function syncIndMapText(){
+  const rows = [...document.querySelectorAll('#indMapEditor tr[data-ind]')].map(tr=>{
+    const k = tr.querySelector('.ind-k').value.trim();
+    const v = tr.querySelector('.ind-v').value.trim();
+    return (k && v) ? `${k}=${v}` : '';
+  }).filter(Boolean);
+  $('indMap').value = rows.join('\n');
+}
+function renderIndMapEditor(text){
+  const lines = (text||'').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+  let html = '<table class="ind-tbl"><tr><th>关键字</th><th>标准名（大区/适应症）</th><th></th></tr>';
+  if(!lines.length) html += `<tr data-ind><td><input class="ind-k" placeholder="如 银屑"/></td><td><input class="ind-v" placeholder="如 皮科"/></td><td><button class="ind-del" type="button">×</button></td></tr>`;
+  lines.forEach(l=>{
+    const i = l.indexOf('=');
+    const k = i<0 ? l : l.slice(0,i).trim();
+    const v = i<0 ? '' : l.slice(i+1).trim();
+    html += `<tr data-ind><td><input class="ind-k" value="${escAttr(k)}"/></td><td><input class="ind-v" value="${escAttr(v)}"/></td><td><button class="ind-del" type="button">×</button></td></tr>`;
+  });
+  html += '</table>';
+  $('indMapEditor').innerHTML = html;
+  bindIndRow();
+  syncIndMapText();
+}
+function bindIndRow(){
+  $('indMapEditor').querySelectorAll('.ind-del').forEach(b=> b.onclick = ()=>{ b.closest('tr').remove(); syncIndMapText(); previewIndMap(); });
+  $('indMapEditor').querySelectorAll('input').forEach(inp=> inp.oninput = ()=>{ syncIndMapText(); previewIndMap(); });
+}
+function previewIndMap(){
+  try{
+    const box = $('indPreview');
+    if(!rawData || !rawData.length){ box.textContent=''; return; }
+    syncIndMapText();
+    const indMap = app.parseIndMap($('indMap').value);
+    const col = mapping['适应症'] || '适应症';
+    const counts = {};
+    rawData.forEach(r=>{ const std = app.normalizeIndication(r[col], indMap); counts[std]=(counts[std]||0)+1; });
+    const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    box.innerHTML = '映射分布预览（按行数）：' + sorted.map(([k,v])=>`${escAttr(k)} <b>${v}</b>`).join(' · ');
+  }catch(e){ /* ignore */ }
+}
+$('btnAddInd').onclick = ()=>{
+  const tb = $('indMapEditor');
+  tb.insertAdjacentHTML('beforeend', `<tr data-ind><td><input class="ind-k" placeholder="关键字"/></td><td><input class="ind-v" placeholder="标准名"/></td><td><button class="ind-del" type="button">×</button></td></tr>`);
+  const tr = tb.lastElementChild;
+  tr.querySelector('.ind-del').onclick = ()=>{ tr.remove(); syncIndMapText(); previewIndMap(); };
+  tr.querySelector('input').oninput = ()=>{ syncIndMapText(); previewIndMap(); };
+  syncIndMapText(); previewIndMap();
+};
+$('btnSaveInd').onclick = ()=>{
+  syncIndMapText();
+  try{ localStorage.setItem('indMapText', $('indMap').value); }catch(e){}
+  $('dataStatus').textContent = '适应症映射已保存到本地浏览器，下次打开自动加载。';
+};
+$('btnResetInd').onclick = ()=>{ renderIndMapEditor(DEFAULT_IND_MAP); previewIndMap(); };
+// 把上传数据中出现的全部适应症自动填进映射表（仅补充尚未被现有规则覆盖的），与「导入数据中全部科室」一致
+function importIndFromData(){
+  if(!rawData || !rawData.length) return;
+  try{
+    syncIndMapText();
+    const existing = app.parseIndMap($('indMap').value);
+    const stdSet = new Set(existing.map(([,std])=>std));
+    const col = mapping['适应症'] || '适应症';
+    const raws = [...new Set(rawData.map(r=>{ const v=r[col]; return (v==null?'':String(v).trim()); }).filter(v=>v!==''))].sort();
+    const missing = raws.filter(rw => app.normalizeIndication(rw, existing) === rw && !stdSet.has(rw)); // 尚无规则覆盖且本身不是某标准名的才算缺失
+    if(!missing.length) return;
+    const newLines = missing.map(rw => `${rw}=${rw}`);
+    const cur = ($('indMap').value || '').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+    renderIndMapEditor([...cur, ...newLines].join('\n'));
+    previewIndMap();
+    if(rawData) prefillSelectors(rawData); // 刷新「适应症范围」复选框
+  }catch(e){ /* ignore */ }
+}
+$('btnImportInd').onclick = ()=>{
+  if(!rawData || !rawData.length){ $('dataStatus').textContent = '请先上传数据再导入适应症。'; return; }
+  const before = ($('indMap').value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+  importIndFromData();
+  const after = ($('indMap').value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+  $('dataStatus').textContent = `已从数据导入适应症映射：新增 ${Math.max(0,after-before)} 行（仅补充未覆盖），请核对并修改「标准名」列后点「保存映射」。`;
+};
+(function initIndMap(){
+  let saved = null;
+  try{ saved = localStorage.getItem('indMapText'); }catch(e){}
+  renderIndMapEditor(saved != null ? saved : DEFAULT_IND_MAP);
+})();
+
+/* ---------- 科室映射在线维护 ---------- */
+const DEFAULT_DEPT_MAP = `皮肤=皮肤科
+性病=皮肤科
+风湿=风湿免疫科
+免疫=风湿免疫科
+消化=消化内科
+呼吸=呼吸内科`;
+function syncDeptMapText(){
+  const rows = [...document.querySelectorAll('#deptMapEditor tr[data-dept]')].map(tr=>{
+    const k = tr.querySelector('.dept-k').value.trim();
+    const v = tr.querySelector('.dept-v').value.trim();
+    return (k && v) ? `${k}=${v}` : '';
+  }).filter(Boolean);
+  $('deptMap').value = rows.join('\n');
+}
+function renderDeptMapEditor(text){
+  const lines = (text||'').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+  let html = '<table class="ind-tbl"><tr><th>关键字</th><th>标准科室</th><th></th></tr>';
+  if(!lines.length) html += `<tr data-dept><td><input class="dept-k" placeholder="如 皮肤"/></td><td><input class="dept-v" placeholder="如 皮肤科"/></td><td><button class="dept-del" type="button">×</button></td></tr>`;
+  lines.forEach(l=>{
+    const i = l.indexOf('=');
+    const k = i<0 ? l : l.slice(0,i).trim();
+    const v = i<0 ? '' : l.slice(i+1).trim();
+    html += `<tr data-dept><td><input class="dept-k" value="${escAttr(k)}"/></td><td><input class="dept-v" value="${escAttr(v)}"/></td><td><button class="dept-del" type="button">×</button></td></tr>`;
+  });
+  html += '</table>';
+  $('deptMapEditor').innerHTML = html;
+  bindDeptRow();
+  syncDeptMapText();
+}
+function bindDeptRow(){
+  $('deptMapEditor').querySelectorAll('.dept-del').forEach(b=> b.onclick = ()=>{ b.closest('tr').remove(); syncDeptMapText(); previewDeptMap(); });
+  $('deptMapEditor').querySelectorAll('input').forEach(inp=> inp.oninput = ()=>{ syncDeptMapText(); previewDeptMap(); });
+}
+function previewDeptMap(){
+  try{
+    const box = $('deptPreview');
+    if(!rawData || !rawData.length){ box.textContent=''; return; }
+    syncDeptMapText();
+    const deptMap = app.parseDeptMap($('deptMap').value);
+    const col = mapping['处方科室'] || '处方科室';
+    const counts = {};
+    rawData.forEach(r=>{ const std = app.normalizeDept(r[col], deptMap); counts[std]=(counts[std]||0)+1; });
+    const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    box.innerHTML = '映射分布预览（按行数）：' + sorted.map(([k,v])=>`${escAttr(k)} <b>${v}</b>`).join(' · ');
+  }catch(e){ /* ignore */ }
+}
+$('btnAddDept').onclick = ()=>{
+  const tb = $('deptMapEditor');
+  tb.insertAdjacentHTML('beforeend', `<tr data-dept><td><input class="dept-k" placeholder="关键字"/></td><td><input class="dept-v" placeholder="标准科室"/></td><td><button class="dept-del" type="button">×</button></td></tr>`);
+  const tr = tb.lastElementChild;
+  tr.querySelector('.dept-del').onclick = ()=>{ tr.remove(); syncDeptMapText(); previewDeptMap(); };
+  tr.querySelector('input').oninput = ()=>{ syncDeptMapText(); previewDeptMap(); };
+  syncDeptMapText(); previewDeptMap();
+};
+$('btnSaveDept').onclick = ()=>{
+  syncDeptMapText();
+  try{ localStorage.setItem('deptMapText', $('deptMap').value); }catch(e){}
+  if(rawData) prefillSelectors(rawData);
+  $('dataStatus').textContent = '科室映射已保存到本地浏览器，下次打开自动加载。';
+};
+$('btnResetDept').onclick = ()=>{ renderDeptMapEditor(DEFAULT_DEPT_MAP); previewDeptMap(); };
+// 把上传数据中出现的全部科室自动填进映射表（仅补充尚未被现有规则覆盖的），避免逐个手增
+function importDeptFromData(){
+  if(!rawData || !rawData.length) return;
+  try{
+    syncDeptMapText();
+    const existing = app.parseDeptMap($('deptMap').value);
+    const stdSet = new Set(existing.map(([,std])=>std));
+    const col = mapping['处方科室'] || '处方科室';
+    const raws = [...new Set(rawData.map(r=>{ const v = r[col]; return (v==null?'':String(v).trim()); }).filter(v=>v!==''))].sort();
+    const missing = raws.filter(rw => app.normalizeDept(rw, existing) === rw && !stdSet.has(rw)); // 尚无规则覆盖且本身不是某标准名的才算缺失
+    if(!missing.length) return;
+    const newLines = missing.map(rw => `${rw}=${rw}`);
+    const cur = ($('deptMap').value || '').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+    renderDeptMapEditor([...cur, ...newLines].join('\n'));
+    previewDeptMap();
+    if(rawData) prefillSelectors(rawData);
+  }catch(e){ /* ignore */ }
+}
+$('btnImportDept').onclick = ()=>{
+  if(!rawData || !rawData.length){ $('dataStatus').textContent = '请先上传数据再导入科室。'; return; }
+  const before = ($('deptMap').value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+  importDeptFromData();
+  const after = ($('deptMap').value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+  $('dataStatus').textContent = `已从数据导入科室映射：新增 ${Math.max(0,after-before)} 行（仅补充未覆盖科室），请核对并修改「标准科室」列后点「保存映射」。`;
+};
+(function initDeptMap(){
+  let saved = null;
+  try{ saved = localStorage.getItem('deptMapText'); }catch(e){}
+  renderDeptMapEditor(saved != null ? saved : DEFAULT_DEPT_MAP);
+})();
+
+/* ---------- 医院 / 医生 清洗映射（通用编辑器工厂，复用与科室一致的「关键字=标准名」逻辑） ---------- */
+const DEFAULT_HOSP_MAP = '';
+const DEFAULT_DOC_MAP = '';
+function makeEntityEditor(cfg){
+  // cfg: { key, lsKey, def, col, label, parse, norm, btnAdd, btnSave, btnReset, btnImport }
+  const taId = cfg.key+'Map', edId = cfg.key+'MapEditor', prevId = cfg.key+'Preview';
+  const kCls = cfg.key+'-k', vCls = cfg.key+'-v', rowAttr = 'data-'+cfg.key, delCls = cfg.key+'-del';
+  function sync(){
+    const rows = [...document.querySelectorAll('#'+edId+' tr['+rowAttr+']')].map(tr=>{
+      const k = tr.querySelector('.'+kCls).value.trim();
+      const v = tr.querySelector('.'+vCls).value.trim();
+      return (k && v) ? `${k}=${v}` : '';
+    }).filter(Boolean);
+    $(taId).value = rows.join('\n');
+  }
+  function render(text){
+    const lines = (text||'').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+    let html = '<table class="ind-tbl"><tr><th>关键字</th><th>标准'+cfg.label+'</th><th></th></tr>';
+    if(!lines.length) html += `<tr ${rowAttr}><td><input class="${kCls}" placeholder="关键字"/></td><td><input class="${vCls}" placeholder="标准${cfg.label}"/></td><td><button class="${delCls}" type="button">×</button></td></tr>`;
+    lines.forEach(l=>{
+      const i = l.indexOf('=');
+      const k = i<0?l:l.slice(0,i).trim();
+      const v = i<0?'':l.slice(i+1).trim();
+      html += `<tr ${rowAttr}><td><input class="${kCls}" value="${escAttr(k)}"/></td><td><input class="${vCls}" value="${escAttr(v)}"/></td><td><button class="${delCls}" type="button">×</button></td></tr>`;
+    });
+    html += '</table>';
+    $(edId).innerHTML = html;
+    bind(); sync();
+  }
+  function bind(){
+    $(edId).querySelectorAll('.'+delCls).forEach(b=> b.onclick = ()=>{ b.closest('tr').remove(); sync(); preview(); });
+    $(edId).querySelectorAll('input').forEach(inp=> inp.oninput = ()=>{ sync(); preview(); });
+  }
+  function preview(){
+    try{
+      const box = $(prevId);
+      if(!rawData || !rawData.length){ box.textContent=''; return; }
+      sync();
+      const m = cfg.parse($(taId).value);
+      const col = mapping[cfg.col] || cfg.col;
+      const counts = {};
+      rawData.forEach(r=>{ const std = cfg.norm(r[col], m); counts[std]=(counts[std]||0)+1; });
+      const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+      box.innerHTML = '映射分布预览（按行数）：' + sorted.map(([k,v])=>`${escAttr(k)} <b>${v}</b>`).join(' · ');
+    }catch(e){ /* ignore */ }
+  }
+  function add(){
+    const tb = $(edId);
+    tb.insertAdjacentHTML('beforeend', `<tr ${rowAttr}><td><input class="${kCls}" placeholder="关键字"/></td><td><input class="${vCls}" placeholder="标准${cfg.label}"/></td><td><button class="${delCls}" type="button">×</button></td></tr>`);
+    const tr = tb.lastElementChild;
+    tr.querySelector('.'+delCls).onclick = ()=>{ tr.remove(); sync(); preview(); };
+    tr.querySelector('input').oninput = ()=>{ sync(); preview(); };
+    sync(); preview();
+  }
+  function save(){
+    sync();
+    try{ localStorage.setItem(cfg.lsKey, $(taId).value); }catch(e){}
+    if(rawData) prefillSelectors(rawData);
+    $('dataStatus').textContent = cfg.label+'映射已保存到本地浏览器，下次打开自动加载。';
+  }
+  function reset(){ render(cfg.def); preview(); }
+  function importFromData(){
+    if(!rawData || !rawData.length) return;
+    try{
+      sync();
+      const existing = cfg.parse($(taId).value);
+      const stdSet = new Set(existing.map(([,std])=>std));
+      const col = mapping[cfg.col] || cfg.col;
+      const raws = [...new Set(rawData.map(r=>{ const v=r[col]; return (v==null?'':String(v).trim()); }).filter(v=>v!==''))].sort();
+      const missing = raws.filter(rw => cfg.norm(rw, existing) === rw && !stdSet.has(rw));
+      if(!missing.length) return;
+      const newLines = missing.map(rw=>`${rw}=${rw}`);
+      const cur = ($(taId).value||'').split('\n').map(l=>l.trim()).filter(Boolean).filter(l=>!l.startsWith('#'));
+      render([...cur, ...newLines].join('\n'));
+      preview();
+      if(rawData) prefillSelectors(rawData);
+    }catch(e){ /* ignore */ }
+  }
+  $(cfg.btnAdd).onclick = add;
+  $(cfg.btnSave).onclick = save;
+  $(cfg.btnReset).onclick = reset;
+  $(cfg.btnImport).onclick = ()=>{
+    if(!rawData || !rawData.length){ $('dataStatus').textContent='请先上传数据再导入。'; return; }
+    const before = ($(taId).value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+    importFromData();
+    const after = ($(taId).value||'').split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#')).length;
+    $('dataStatus').textContent = `已从数据导入${cfg.label}映射：新增 ${Math.max(0,after-before)} 行（仅补充未覆盖），请核对并修改「标准${cfg.label}」列后点「保存映射」。`;
+  };
+  let saved = null;
+  try{ saved = localStorage.getItem(cfg.lsKey); }catch(e){}
+  render(saved != null ? saved : cfg.def);
+  return { render, preview, importFromData };
+}
+const hospEditor = makeEntityEditor({ key:'hosp', lsKey:'hospMapText', def:DEFAULT_HOSP_MAP, col:'医疗单位', label:'医院', parse:app.parseHospMap, norm:app.normalizeHospital, btnAdd:'btnAddHosp', btnSave:'btnSaveHosp', btnReset:'btnResetHosp', btnImport:'btnImportHosp' });
+const docEditor = makeEntityEditor({ key:'doc', lsKey:'docMapText', def:DEFAULT_DOC_MAP, col:'处方医生', label:'医生', parse:app.parseDoctorMap, norm:app.normalizeDoctor, btnAdd:'btnAddDoc', btnSave:'btnSaveDoc', btnReset:'btnResetDoc', btnImport:'btnImportDoc' });
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try{
+      const wb = XLSX.read(ev.target.result, {type:'array', cellDates:true});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(ws, {defval:''});
+      rawData = json; headers = Object.keys(json[0]||{});
+      mapping = {}; buildMapping(); setErr(''); // 上传真实底表时强制重置映射并重新猜测，避免被示例数据污染
+      previewIndMap(); previewDeptMap();
+      importIndFromData(); // 自动把数据中全部适应症填入映射表，避免复选框比映射多
+      importDeptFromData(); // 自动把数据中全部科室填入映射表，方便合并维护
+      if(typeof hospEditor!=='undefined') hospEditor.importFromData();
+      if(typeof docEditor!=='undefined') docEditor.importFromData();
+      $('dataStatus').textContent = `已读取 ${json.length} 行，列：${headers.join('、')}`;
+    }catch(err){ setErr('读取失败：'+err.message); }
+  };
+  reader.readAsArrayBuffer(f);
+});
+
+$('btnDemo').addEventListener('click', () => {
+  rawData = app.MOCK_ROWS.map(r => ({...r}));
+  headers = STD.slice();
+  mapping = {}; STD.forEach(s => mapping[s] = s);
+  buildMapping(); setErr('');
+  previewIndMap(); previewDeptMap();
+  importIndFromData();
+  $('dataStatus').textContent = `已加载示例数据 ${rawData.length} 行（原始不脱敏，可切换脱敏预览）。`;
+});
+$('btnRefresh').addEventListener('click', () => prefillSelectors(rawData));
+
+// 针对卢馨兰真实底表「销售数据汇总.xlsx」的已知列做硬映射，优先级高于 guess
+function applyKnownMapping(){
+  const known = {
+    '销售日期':'销售时间','医疗单位':'医疗单位','处方科室':'处方科室','处方医生':'处方医生',
+    '通用名':'商品名称','适应症':'适应症','销量数量':'转化后数量',
+    'oneid':'oneid','会员电话':'会员电话','会员号':'会员号','开票抬头':'开票抬头','会员姓名':'会员姓名','药房名称':'药房名称'
+  };
+  let applied = 0;
+  for(const std in known){ if(headers.includes(known[std])){ mapping[std]=known[std]; applied++; } }
+  return applied;
+}
+function guess(s){
+  const t = s.toLowerCase();
+  const m = {销售日期:['销售时间','日期','时间'],医疗单位:['医疗单位','医院'],处方科室:['处方科室','科室'],处方医生:['处方医生','医生'],
+    通用名:['商品名称','通用名','产品'],适应症:['适应症','诊断'],销量数量:['转化后数量','销售数量','销量']};
+  for(const std in m){ if(m[std].some(k=>t.includes(k))) return std; }
+  return null;
+}
+function buildMapping(){
+  $('mapCard').style.display = 'block';
+  mapping = mapping && Object.keys(mapping).length ? mapping : {};
+  let html = '<table><tr><th>标准字段</th><th>底表列</th><th>必填</th></tr>';
+  STD.forEach(std=>{
+    const sel = `<select data-std="${std}">` + ['<option value="">—</option>']
+      .concat(headers.map(h=>`<option value="${h}">${h}</option>`)).join('') + '</select>';
+    html += `<tr><td>${std}</td><td>${sel}</td><td class="${REQ.includes(std)?'trend-down':'muted'}">${REQ.includes(std)?'是':'否'}</td></tr>`;
+  });
+  html += '</table>';
+  $('mapTable').innerHTML = html;
+  $('mapTable').querySelectorAll('select').forEach(s=> s.addEventListener('change', ()=>{
+    mapping[s.dataset.std]=s.value;
+    prefillSelectors(rawData); // 手动改映射后立刻刷新本品/适应症下拉
+  }));
+  applyKnownMapping(); // 先应用已知硬映射
+  STD.forEach(std=>{ if(!mapping[std]){ const g=guess(std); if(g && headers.includes(g)) mapping[std]=g; } });
+  $('mapTable').querySelectorAll('select').forEach(s=> s.value = mapping[s.dataset.std]||'');
+  prefillSelectors(rawData);
+}
+function renderCompCheckboxes(ownVals, ownProduct){
+  const box = $('compChk');
+  const vals = (ownVals||[]).filter(v=>v!==ownProduct);
+  if(!vals.length){ box.innerHTML = '<span class="muted">请先上传数据并选择分析品种</span>'; return; }
+  box.innerHTML = vals.map(v=>`<label><input type="checkbox" value="${v}" checked/> ${v}</label>`).join('');
+}
+$('btnIndAll').onclick = ()=> $('indChk').querySelectorAll('input[type=checkbox]').forEach(i=> i.checked = true);
+$('btnIndNone').onclick = ()=> $('indChk').querySelectorAll('input[type=checkbox]').forEach(i=> i.checked = false);
+function prefillSelectors(data){
+  try{
+    if(!data||!data.length) return;
+    syncIndMapText(); syncDeptMapText();
+    const own = $('ownProduct');
+    const indMap = app.parseIndMap($('indMap').value);
+    const uniq = (k)=>[...new Set(data.map(r=>r[mapping[k]||k]).filter(v=>v!==''&&v!=null))];
+    const ownVals = uniq('通用名');
+    own.innerHTML = ownVals.map(v=>`<option>${v}</option>`).join('');
+    // 切换本品时刷新竞品列表，默认全选
+    own.onchange = ()=> renderCompCheckboxes(ownVals, own.value);
+    renderCompCheckboxes(ownVals, own.value);
+    // 适应症多选(checkbox)，用「归并后的标准名」，与计算引擎归一化口径一致；默认不勾选=全部
+    const indVals = [...new Set(data.map(r=> app.normalizeIndication(r[mapping['适应症']||'适应症'], indMap)).filter(v=>v!==''&&v!=null))].sort();
+    $('indChk').innerHTML = indVals.length ? indVals.map(v=>`<label><input type="checkbox" value="${v}"/> ${v}</label>`).join('') : '<span class="muted">（无适应症数据）</span>';
+    // 科室下拉用「归并后的标准名」，与计算引擎归一化口径一致
+    const deptMap = app.parseDeptMap($('deptMap').value);
+    const deptCol = mapping['处方科室'] || '处方科室';
+    const deptVals = [...new Set(data.map(r=> app.normalizeDept(r[deptCol], deptMap)).filter(v=>v!==''&&v!=null))].sort();
+    $('deptFilter').innerHTML = '<option value="">（全部科室）</option>' + deptVals.map(v=>`<option>${v}</option>`).join('');
+    const chk = DEDUP_OPTS.map(o=>{
+      const checked = o==='oneid' ? 'checked' : '';
+      return `<label><input type="checkbox" value="${o}" ${checked}/> ${o}</label>`;
+    }).join('');
+    $('dedupChk').innerHTML = chk;
+    $('dataStatus').textContent += ` · 本品候选 ${ownVals.length} 个 · 适应症候选 ${indVals.length} 个 · 科室候选 ${deptVals.length} 个`;
+  }catch(err){ setErr('字段选项刷新失败：'+err.message); console.error(err); }
+}
+
+$('btnRun').addEventListener('click', () => {
+  setErr('');
+  if(!rawData){ setErr('请先上传数据或加载示例数据。'); return; }
+  const map = {};
+  STD.forEach(std=>{ const v = mapping[std]; if(v) map[std]=v; });
+  const missing = REQ.filter(r=>!map[r]);
+  if(missing.length){ setErr('缺少必填字段映射：'+missing.join('、')); return; }
+  const rows = rawData.map(r=>{ const o={}; STD.forEach(s=> o[s]= r[map[s]] ); return o; });
+  const dedup = [...$('dedupChk').querySelectorAll('input:checked')].map(i=>i.value);
+  if(!dedup.length){ setErr('请至少选择一个去重患者字段。'); return; }
+  const competitors = [...$('compChk').querySelectorAll('input:checked')].map(i=>i.value);
+  syncIndMapText();
+  const cfg = {
+    startYM: $('startYM').value, endYM: $('endYM').value,
+    ownProduct: $('ownProduct').value,
+    indications: [...$('indChk').querySelectorAll('input:checked')].map(i=>i.value),
+    topPct: (+$('topPct').value||30)/100,
+    dedupFields: dedup,
+    competitors: competitors,
+    indicationMap: $('indMap').value,
+    deptMap: $('deptMap').value,
+    hospMap: $('hospMap').value,
+    docMap: $('docMap').value,
+    dept: $('deptFilter').value || undefined
+  };
+  try{
+    const res = app.runAnalysis(rows, cfg);
+    lastResult = res;
+    render(res, $('mask').checked);
+    $('resultCard').style.display = 'block';
+  }catch(err){ setErr('计算失败：'+err.message); }
+});
+
+function hashCode(s){let h=0;for(let i=0;i<s.length;i++){h=(h<<5)-h+s.charCodeAt(i);h|=0;}return Math.abs(h)||1;}
+function jitterScatter(list){
+  // 把坐标完全重叠的点做轻微散开，避免所有颜色糊成一坨；真实数值以 tooltip 为准
+  const groups={};
+  list.forEach(d=>{ const key=`${d.patients}|${(+d.dot).toFixed(2)}`; (groups[key]=groups[key]||[]).push(d); });
+  const out=[];
+  Object.values(groups).forEach(grp=>{
+    grp.sort((a,b)=>a.doctor.localeCompare(b.doctor,'zh'));
+    const n=grp.length;
+    const stepX=n>1?Math.max(0.18,Math.min(0.55,2.2/Math.sqrt(n))):0;
+    const stepY=stepX*0.55;
+    const cols=Math.ceil(Math.sqrt(n));
+    grp.forEach((d,i)=>{
+      let x=d.patients, y=d.dot;
+      if(n>1){
+        const cx=(i%cols)-(cols-1)/2;
+        const cy=Math.floor(i/cols)-Math.floor((n-1)/cols)/2;
+        x=d.patients+cx*stepX;
+        y=d.dot+cy*stepY;
+      }
+      out.push({...d,x:Math.max(0.05,x),y:Math.max(0.01,y)});
+    });
+  });
+  return out;
+}
+function render(res, mask){
+  if(res._meta) $('diag').textContent = `诊断：读取 ${res._meta.total} 行 → 时间窗口内 ${res._meta.window} 行 → 本品(${res._meta.ownProduct}) ${res._meta.own} 行 → 去重后医生 ${res.doctors.length} 人（适应症：${res._meta.indication} · 科室：${res._meta.dept}）`;
+  const c = res.counts;
+  $('stats').innerHTML = [
+    ['意见领袖',c.opinion,'t-opinion'],['学术支持对象',c.support,'t-support'],
+    ['潜力医生',c.potential,'t-potential'],['待评估',c.low,'t-low']
+  ].map(([n,v,t])=>`<div class="stat"><b>${v}</b><span class="${'tag '+t}">${n}</span></div>`).join('');
+
+  const docs = app.applyMask(res.doctors, mask);
+  if(typeof echarts !== 'undefined'){
+    const chart = echarts.init($('quadrant'));
+    const colors = {'意见领袖':'#16a34a','学术支持对象':'#d97706','潜力医生':'#2563eb','待评估':'#94a3b8'};
+    const groups = {};
+    jitterScatter(docs).forEach(d=>{ (groups[d.quadrant]=groups[d.quadrant]||[]).push([d.x,d.y,d.patients,d.dot,d.doctor,d.hospital,d.dept]); });
+    const series = Object.keys(groups).map(q=>({name:q,type:'scatter',data:groups[q],itemStyle:{color:colors[q],opacity:0.65},symbolSize:8,emphasis:{focus:'self',itemStyle:{borderColor:'#333',borderWidth:1,opacity:1,shadowBlur:6,shadowColor:'#000'}}}));
+    chart.setOption({
+      tooltip:{formatter:p=>`${p.data[4]}<br/>${p.data[5]} / ${p.data[6]}<br/>患者 ${p.data[2]} 人 · DOT ${p.data[3]}`},
+      legend:{top:0},
+      grid:{left:70,right:40,top:40,bottom:70},
+      xAxis:{name:'患者数',type:'value',min:0,nameLocation:'middle',nameGap:25,splitLine:{lineStyle:{type:'dashed'}}},
+      yAxis:{name:'DOT(人均盒数)',type:'value',min:0,nameLocation:'middle',nameGap:40,splitLine:{lineStyle:{type:'dashed'}}},
+      dataZoom:[{type:'inside',xAxisIndex:0},{type:'inside',yAxisIndex:0},{type:'slider',xAxisIndex:0,bottom:10,height:18,handleSize:'80%'},{type:'slider',yAxisIndex:0,right:10,width:18,handleSize:'80%'}],
+      series
+    });
+  } else {
+    $('quadrant').innerHTML = '<div class="hint">图表库未加载（需联网），下方表格已含全部数据。</div>';
+  }
+
+  $('docTable').innerHTML = '<table><tr><th>医生</th><th>医院</th><th>科室</th><th>患者数</th><th>DOT</th><th>分层</th></tr>' +
+    docs.sort((a,b)=>b.patients-a.patients).map(d=>`<tr><td>${d.doctor}</td><td>${d.hospital}</td><td>${d.dept}</td><td>${d.patients}</td><td>${d.dot}</td><td><span class="tag t-${d.quadrant==='意见领袖'?'opinion':d.quadrant==='学术支持对象'?'support':d.quadrant==='潜力医生'?'potential':'low'}">${d.quadrant}</span></td></tr>`).join('') + '</table>';
+
+  renderMarket(res, mask);
+  $('marketToggle').querySelectorAll('input').forEach(r=> r.onclick = ()=> renderMarket(res, mask));
+  renderHospital(res, mask);
+}
+function renderHospital(res, mask){
+  if(!res.hospitals) return;
+  const drillSel = $('hospDrill');
+  const curDrill = drillSel.value;
+  drillSel.innerHTML = '<option value="">全部医院</option>' + res.hospitals.map(h=>`<option value="${escAttr(h.hospital)}">${escAttr(mask?app.maskName(h.hospital):h.hospital)}</option>`).join('');
+  drillSel.value = (curDrill && res.hospitals.some(h=>h.hospital===curDrill)) ? curDrill : '';
+  const drill = drillSel.value;
+
+  const topN = parseInt($('topNHosp').value,10) || 3;
+  const sortKey = $('hospSort').value || 'patients';
+  const sortName = {patients:'患者数',boxes:'销量',dot:'DOT'}[sortKey];
+  const sorted = [...res.hospitals].sort((a,b)=> b[sortKey]-a[sortKey]);
+  const top = sorted.slice(0, topN);
+  const topSet = new Set(top.map(h=>h.hospital));
+
+  $('hospStats').innerHTML = [
+    ['医院数', res.hospitals.length, ''],
+    ['TOP'+topN+' 患者合计', top.reduce((s,h)=>s+h.patients,0), 't-opinion'],
+    ['TOP'+topN+' 销量合计', top.reduce((s,h)=>s+h.boxes,0), 't-potential'],
+    ['品种数(范围)', res.products.length, '']
+  ].map(([n,v,t])=>`<div class="stat"><b>${v}</b><span class="${'tag '+t}">${n}</span></div>`).join('');
+
+  let prodRows, prodTitle;
+  if(drill){
+    const hp = res.hospitalProducts.filter(x=>x.hospital===drill);
+    const tot = hp.reduce((s,x)=>s+x.boxes,0)||1;
+    prodRows = hp.map(x=>({...x, share:+(x.boxes/tot*100).toFixed(1)}));
+    prodTitle = mask?app.maskName(drill):drill;
+  } else {
+    prodRows = res.products;
+    prodTitle = '全部范围';
+  }
+  prodRows.sort((a,b)=>b.boxes-a.boxes);
+
+  if(typeof echarts!=='undefined'){
+    const bar = echarts.init($('hospBar'));
+    const displayHosp = top.map(h=> mask?app.maskName(h.hospital):h.hospital);
+    bar.setOption({
+      title:{text:`TOP ${topN} 医院（按${sortName}）`,left:'center',textStyle:{fontSize:13}},
+      tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const h=top[p[0].dataIndex];return `${displayHosp[p[0].dataIndex]}<br/>患者 ${h.patients} · 销量 ${h.boxes} · DOT ${h.dot}<br/>医生 ${h.doctors} · 品种 ${h.products}`;}},
+      grid:{left:60,right:20,top:40,bottom:70},
+      xAxis:{type:'category',data:displayHosp,axisLabel:{interval:0,rotate:30,fontSize:11}},
+      yAxis:{type:'value',name:sortName},
+      series:[{type:'bar',data:top.map(h=>h[sortKey]),itemStyle:{color:'#2563eb'}}]
+    });
+    const pie = echarts.init($('prodPie'));
+    const palette = ['#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#db2777','#65a30d','#ea580c','#475569'];
+    pie.setOption({
+      title:{text:`品种占比 · ${prodTitle}`,left:'center',textStyle:{fontSize:13}},
+      tooltip:{trigger:'item',formatter:p=>`${p.name}<br/>销量 ${p.value} 盒 (${p.percent}%)<br/>患者 ${(prodRows[p.dataIndex]||{}).patients||0} · DOT ${(prodRows[p.dataIndex]||{}).dot||0}`},
+      legend:{bottom:0,type:'scroll',textStyle:{fontSize:11}},
+      series:[{type:'pie',radius:['35%','65%'],center:['50%','48%'],data:prodRows.map((x,i)=>({name:x.product,value:x.boxes,itemStyle:{color: x.product===res.ownProduct?'#dc2626':palette[i%palette.length]}}))}]
+    });
+  } else {
+    $('hospBar').innerHTML='<div class="hint">图表库未加载（需联网），下方表格已含全部数据。</div>';
+    $('prodPie').innerHTML='<div class="hint">图表库未加载（需联网），下方表格已含全部数据。</div>';
+  }
+
+  $('prodTable').innerHTML = '<table><tr><th>品种</th><th>销量(盒)</th><th>占比</th><th>患者数</th><th>DOT</th></tr>' +
+    prodRows.map(x=>`<tr><td>${x.product===res.ownProduct?'<b>'+escAttr(x.product)+'(本品)</b>':escAttr(x.product)}</td><td>${x.boxes}</td><td>${x.share}%</td><td>${x.patients}</td><td>${x.dot}</td></tr>`).join('') + '</table>';
+
+  // 适应症占比分布（与品种视角对称，支持下钻医院切换该院适应症构成）
+  let indRows, indTitle;
+  if(drill){
+    indRows = (res.hospitalIndications[drill]||[]).map(x=>({...x}));
+    indTitle = mask?app.maskName(drill):drill;
+  } else {
+    indRows = res.indications||[];
+    indTitle = '全部范围';
+  }
+  indRows.sort((a,b)=>b.boxes-a.boxes);
+  if(typeof echarts!=='undefined'){
+    const ipie = echarts.init($('indPie'));
+    const palette = ['#7c3aed','#0891b2','#db2777','#65a30d','#ea580c','#475569','#2563eb','#16a34a','#d97706','#dc2626'];
+    ipie.setOption({
+      title:{text:`适应症占比 · ${indTitle}`,left:'center',textStyle:{fontSize:13}},
+      tooltip:{trigger:'item',formatter:p=>`${p.name}<br/>销量 ${p.value} 盒 (${p.percent}%)<br/>患者 ${(indRows[p.dataIndex]||{}).patients||0} · DOT ${(indRows[p.dataIndex]||{}).dot||0}`},
+      legend:{bottom:0,type:'scroll',textStyle:{fontSize:11}},
+      series:[{type:'pie',radius:['35%','65%'],center:['50%','48%'],data:indRows.map((x,i)=>({name:x.indication,value:x.boxes,itemStyle:{color:palette[i%palette.length]}}))}]
+    });
+  } else {
+    $('indPie').innerHTML='<div class="hint">图表库未加载（需联网），下方表格已含全部数据。</div>';
+  }
+  $('indTable').innerHTML = '<table><tr><th>适应症</th><th>销量(盒)</th><th>占比</th><th>患者数</th><th>DOT</th></tr>' +
+    indRows.map(x=>`<tr><td>${escAttr(x.indication)}</td><td>${x.boxes}</td><td>${x.share}%</td><td>${x.patients}</td><td>${x.dot}</td></tr>`).join('') + '</table>';
+
+  const detail = (drill ? res.detail.filter(d=>d.hospital===drill) : res.detail.filter(d=>topSet.has(d.hospital)));
+  const md = app.applyMask(detail, mask);
+  const limit = 500;
+  const shown = md.slice(0, limit);
+  $('hospDetail').innerHTML = `<div class="hint" style="margin-bottom:6px">${drill?('医院：'+escAttr(mask?app.maskName(drill):drill)):'TOP '+topN+' 医院合计'} · 共 ${md.length} 行${md.length>limit?'（仅显示前 '+limit+' 行）':''}</div>` +
+    '<table><tr><th>医院</th><th>医生</th><th>品种</th><th>适应症</th><th>销量(盒)</th><th>患者数</th><th>DOT</th></tr>' +
+    shown.map(d=>`<tr><td>${escAttr(d.hospital)}</td><td>${escAttr(d.doctor)}</td><td>${escAttr(d.product)}</td><td>${escAttr(d.indication)}</td><td>${d.boxes}</td><td>${d.patients}</td><td>${d.dot}</td></tr>`).join('') + '</table>';
+}
+function renderMarket(res, mask){
+  const excl = $('marketToggle').querySelector('input:checked').value === 'excl';
+  const data = app.applyMask(excl?res.marketExcl:res.marketIncl, mask);
+  const summary = excl?res.summaryExcl:res.summaryIncl;
+  $('marketSummary').textContent = summary;
+  const tmap = {'上升':'trend-up','下降':'trend-down','新进':'trend-new','流失':'trend-lost','持平':''};
+  $('marketTable').innerHTML = '<table><tr><th>医生</th><th>医院</th><th>科室</th><th>盒数</th><th>患者</th><th>上期盒</th><th>变化</th><th>趋势</th></tr>' +
+    data.map(d=>`<tr><td>${d.doctor}</td><td>${d.hospital}</td><td>${d.dept}</td><td>${d.boxes}</td><td>${d.patients}</td><td>${d.prevBoxes}</td><td>${d.delta>=0?'+':''}${d.delta}</td><td class="${tmap[d.trend]||''}">${d.trend}</td></tr>`).join('') + '</table>';
+}
+
+$('topNHosp').addEventListener('change', ()=>{ if(lastResult) renderHospital(lastResult, $('mask').checked); });
+$('hospSort').addEventListener('change', ()=>{ if(lastResult) renderHospital(lastResult, $('mask').checked); });
+$('hospDrill').addEventListener('change', ()=>{ if(lastResult) renderHospital(lastResult, $('mask').checked); });
+$('mask').addEventListener('change', ()=>{ if(lastResult) render(lastResult, $('mask').checked); });
+
+$('btnExport').addEventListener('click', () => {
+  if(!lastResult) return;
+  const wb = XLSX.utils.book_new();
+  const doc = lastResult.doctors.map(d=>({医生:d.doctor,医院:d.hospital,科室:d.dept,患者数:d.patients,DOT:d.dot,分层:d.quadrant}));
+  const mkIn = lastResult.marketIncl.map(d=>({范围:'含本品',医生:d.doctor,医院:d.hospital,科室:d.dept,盒数:d.boxes,患者:d.patients,上期盒:d.prevBoxes,变化:d.delta,趋势:d.trend}));
+  const mkEx = lastResult.marketExcl.map(d=>({范围:'未含本品',医生:d.doctor,医院:d.hospital,科室:d.dept,盒数:d.boxes,患者:d.patients,上期盒:d.prevBoxes,变化:d.delta,趋势:d.trend}));
+  const mk = [...mkIn, ...mkEx];
+  const hosp = lastResult.hospitals.map(d=>({医院:d.hospital,患者数:d.patients,销量盒:d.boxes,DOT:d.dot,医生数:d.doctors,品种数:d.products}));
+  const prod = lastResult.products.map(d=>({品种:d.product,销量盒:d.boxes,占比:d.share,患者数:d.patients,DOT:d.dot}));
+  const hdp = lastResult.detail.map(d=>({医院:d.hospital,医生:d.doctor,品种:d.product,适应症:d.indication,销量盒:d.boxes,患者数:d.patients,DOT:d.dot}));
+  const ind = (lastResult.indications||[]).map(d=>({适应症:d.indication,销量盒:d.boxes,占比:d.share,患者数:d.patients,DOT:d.dot}));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(doc), '医生分层');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mk), '机会市场');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hosp), '医院排行');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prod), '品种占比');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ind), '适应症占比');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hdp), '医院医生品种适应症');
+  XLSX.writeFile(wb, '临床用药洞察_结果.xlsx');
+});
+</script>
+</body>
+</html>
