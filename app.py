@@ -37,14 +37,24 @@ def cached_run(df_std_bytes, cfg_key, cfg):
     return C.run_analysis(df, cfg)
 
 
-def _import_all_values(df_std, std_col, cur_text, is_ind=False):
-    """把数据中该列全部值中，尚未被现有规则覆盖的，补成 `值=值` 追加到映射文本"""
+def _import_all_values(df_std, std_col, cur_text, is_ind=False, _reset=False):
+    """把数据中该列全部值中，尚未被现有规则覆盖的，补成 `值=值` 追加到映射文本
+
+    _reset=True 时清空 cur_text 全部已有规则（仅保留空行/注释），重灌入底表全部原始值
+    """
     if df_std is None or std_col not in df_std.columns:
         return cur_text
+    vals = [v for v in df_std[std_col].dropna().astype(str).unique() if v.strip() != '']
+    if not vals:
+        return cur_text
+    if _reset:
+        kept = '\n'.join(line for line in (cur_text or '').split('\n')
+                         if line.strip() == '' or line.strip().startswith('#'))
+        add = [f"{v}={v}" for v in sorted(vals)]
+        return (kept.rstrip('\n') + '\n' + '\n'.join(add)).strip('\n')
     mapping = C.parse_map(cur_text)
     std_set = {std for _, std in mapping}
     existing_kw = {kw for kw, _ in mapping}
-    vals = [v for v in df_std[std_col].dropna().astype(str).unique() if v.strip() != '']
     add = []
     for v in vals:
         norm = C._normalize_value(v, mapping, is_indication=is_ind)
@@ -138,6 +148,26 @@ if missing:
 
 df_std = C.apply_mapping(raw_df, auto)
 
+# 列出自动识别的列名映射 + 检查关键列是否拿到非空值
+with st.expander("📋 已自动识别的列（点击展开核对）", expanded=False):
+    rows = []
+    for std in C.STD:
+        if std in auto:
+            rows.append(f"- **{auto[std]}** → **{std}**")
+        else:
+            mark = '⚠️ 必填' if std in C.REQ else '可选'
+            rows.append(f"- _(未识别)_ → **{std}** {mark}")
+    st.markdown('\n'.join(rows))
+    st.caption(f"底表实际列：`{'`, `'.join(map(str, raw_df.columns))}`。"
+               "若识别有误，请把底表对应列重命名为标准名（销售日期/医疗单位/处方科室/处方医生/通用名/适应症/销量数量），"
+               "或加上支持别名（销售时间/医院/科室/医生 等）。")
+
+for std_col, label in [('适应症', '适应症'), ('医疗单位', '医院'), ('处方科室', '科室'), ('处方医生', '医生')]:
+    if std_col not in df_std.columns:
+        st.warning(f"⚠️ **未识别到「{label}」列**（标准字段 `{std_col}` 缺失），清洗框将无内容可导入。请检查底表列名。")
+    elif df_std[std_col].dropna().astype(str).str.strip().eq('').all():
+        st.warning(f"⚠️ 「{label}」列识别成功但**全部为空**，自动导入将无内容。请检查底表该列是否有数据。")
+
 # 首次载入自动导入数据出现的全部值（仅补未覆盖）：适应症单独，机构/人员按分段写入合并框
 if not st.session_state.get('_auto_imported'):
     st.session_state.map_ind = _import_all_values(df_std, '适应症', st.session_state.map_ind, is_ind=True)
@@ -162,9 +192,19 @@ with mc[1]:
                 "每段内写 关键字=标准名，每行一条；医生按 医院+医生 区分同名，如 张伟(主任) = 张伟）")
     st.session_state.map_org = st.text_area(
         "机构与人员映射", value=st.session_state.map_org, height=320, label_visibility="collapsed")
-    if st.button("重置机构/人员映射为默认", key="reset_org"):
-        st.session_state.map_org = DEFAULT_ORG_MAP
-        st.rerun()
+    btn_col1, btn_col2 = st.columns([1, 1])
+    with btn_col1:
+        if st.button("🔄 重新扫描底表，导入全部原始值", key="rescan_org",
+                     help="清空本框内已有规则，从底表重新灌入全部医院/科室/医生名（带分段标题）"):
+            _h = _import_all_values(df_std, '医疗单位', '', _reset=True)
+            _d = _import_all_values(df_std, '处方科室', '', _reset=True)
+            _c = _import_all_values(df_std, '处方医生', '', _reset=True)
+            st.session_state.map_org = join_org_map(_h, _d, _c)
+            st.rerun()
+    with btn_col2:
+        if st.button("重置机构/人员映射为默认", key="reset_org"):
+            st.session_state.map_org = DEFAULT_ORG_MAP
+            st.rerun()
 
 # 清洗后规模预览（随上方映射实时更新）
 _org_h, _org_d, _org_c = split_org_map(st.session_state.map_org)
