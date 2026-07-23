@@ -66,38 +66,37 @@ def _import_all_values(df_std, std_col, cur_text, is_ind=False, _reset=False):
     return (base + '\n' + '\n'.join(add)) if base else '\n'.join(add)
 
 
-# 医院 / 科室 / 医生 合并清洗框：[医院] [科室] [医生] 分段，段内 关键字=标准名
-def split_org_map(text):
-    """合并框文本 -> (医院映射文本, 科室映射文本, 医生映射文本)"""
-    sec = {'医院': [], '科室': [], '医生': []}
-    cur = None
-    for line in (text or '').split('\n'):
-        s = line.strip()
-        if not s:
-            continue
-        if s.startswith('[') and s.endswith(']'):
-            name = s[1:-1].strip()
-            cur = name if name in sec else None
-            continue
-        if cur is None:
-            continue
-        sec[cur].append(line.rstrip())
-    return '\n'.join(sec['医院']), '\n'.join(sec['科室']), '\n'.join(sec['医生'])
-
-
-def join_org_map(hosp, dept, doc):
-    """三段映射文本 -> 带 [医院]/[科室]/[医生] 分段的合并框文本"""
-    def block(title, body):
-        lines = [f"[{title}]"]
-        if body and body.strip():
-            lines.append(body.rstrip('\n'))
-        return '\n'.join(lines)
-    return '\n\n'.join([block('医院', hosp), block('科室', dept), block('医生', doc)])
+# 医院 / 科室 / 医生 共用一套清洗映射：本框内的 关键字=标准名 规则会**同步**作用于这三个字段
+def _import_all_org(df_std, cur_text, _reset=False):
+    """把 医院/科室/医生 三列出现的全部原始值（去重合并）灌入机构人员映射框。
+    _reset=True 时清空已有规则（保留注释行）后重灌。"""
+    cols = [c for c in ('医疗单位', '处方科室', '处方医生') if df_std is not None and c in df_std.columns]
+    if not cols:
+        return cur_text
+    vals = set()
+    for c in cols:
+        vals.update(v for v in df_std[c].dropna().astype(str).unique() if v.strip() != '')
+    if not vals:
+        return cur_text
+    if _reset:
+        kept = '\n'.join(line for line in (cur_text or '').split('\n')
+                         if line.strip() == '' or line.strip().startswith('#'))
+        add = [f"{v}={v}" for v in sorted(vals)]
+        return (kept.rstrip('\n') + '\n' + '\n'.join(add)).strip('\n')
+    mapping = C.parse_map(cur_text)
+    std_set = {std for _, std in mapping}
+    existing_kw = {kw for kw, _ in mapping}
+    add = [f"{v}={v}" for v in sorted(vals)
+           if v not in std_set and v not in existing_kw and v == C._normalize_value(v, mapping)]
+    if not add:
+        return cur_text
+    base = cur_text.rstrip('\n')
+    return (base + '\n' + '\n'.join(add)) if base else '\n'.join(add)
 
 
 DEFAULT_ORG_MAP = (
-    "# 医院 / 科室 / 医生 清洗映射：用 [医院] [科室] [医生] 分段，每段内写 关键字=标准名（每行一条）\n"
-    "[医院]\n\n[科室]\n\n[医生]"
+    "# 医院 / 科室 / 医生 共用一套清洗映射：下方 关键字=标准名 会同步清洗这三个字段\n"
+    "# 例如：A院 = A医院 ； 张伟(主任) = 张伟\n"
 )
 
 _init_state()
@@ -168,14 +167,10 @@ for std_col, label in [('适应症', '适应症'), ('医疗单位', '医院'), (
     elif df_std[std_col].dropna().astype(str).str.strip().eq('').all():
         st.warning(f"⚠️ 「{label}」列识别成功但**全部为空**，自动导入将无内容。请检查底表该列是否有数据。")
 
-# 首次载入自动导入数据出现的全部值（仅补未覆盖）：适应症单独，机构/人员按分段写入合并框
+# 首次载入自动导入数据出现的全部值（仅补未覆盖）：适应症单独，机构/人员（医院+科室+医生）合并为一个框
 if not st.session_state.get('_auto_imported'):
     st.session_state.map_ind = _import_all_values(df_std, '适应症', st.session_state.map_ind, is_ind=True)
-    _h0, _d0, _c0 = split_org_map(st.session_state.map_org)
-    _h1 = _import_all_values(df_std, '医疗单位', _h0)
-    _d1 = _import_all_values(df_std, '处方科室', _d0)
-    _c1 = _import_all_values(df_std, '处方医生', _c0)
-    st.session_state.map_org = join_org_map(_h1, _d1, _c1)
+    st.session_state.map_org = _import_all_org(df_std, st.session_state.map_org)
     st.session_state['_auto_imported'] = True
 
 mc = st.columns(2)
@@ -188,18 +183,18 @@ with mc[0]:
         st.session_state.map_ind = C.DEFAULT_IND_MAP
         st.rerun()
 with mc[1]:
-    st.markdown("**医院 / 科室 / 医生 清洗映射**（用 `[医院]` `[科室]` `[医生]` 分段，"
-                "每段内写 关键字=标准名，每行一条；医生按 医院+医生 区分同名，如 张伟(主任) = 张伟）")
+    st.markdown("**医院 / 科室 / 医生 清洗映射（整体同步）**")
+    st.caption("本框的 `关键字=标准名` 规则会**同时**清洗 医院、科室、医生 三个字段。"
+               "例如 `A院 = A医院` 既修正医院，也修正科室/医生里出现的同名；`张伟(主任) = 张伟` 同理。"
+               "⚠️ 因规则三字段共享，关键字建议写得**具体**，避免误伤其他字段（如别用 `人民` 这种短词，会命中「德阳市人民医院」）。")
     st.session_state.map_org = st.text_area(
-        "机构与人员映射", value=st.session_state.map_org, height=320, label_visibility="collapsed")
+        "机构与人员映射", value=st.session_state.map_org, height=320, label_visibility="collapsed",
+        help="关键字=标准名，每行一条；同一标准名可有多条关键字。规则同步应用于医院/科室/医生。")
     btn_col1, btn_col2 = st.columns([1, 1])
     with btn_col1:
         if st.button("🔄 重新扫描底表，导入全部原始值", key="rescan_org",
-                     help="清空本框内已有规则，从底表重新灌入全部医院/科室/医生名（带分段标题）"):
-            _h = _import_all_values(df_std, '医疗单位', '', _reset=True)
-            _d = _import_all_values(df_std, '处方科室', '', _reset=True)
-            _c = _import_all_values(df_std, '处方医生', '', _reset=True)
-            st.session_state.map_org = join_org_map(_h, _d, _c)
+                     help="清空本框内已有规则，从底表重新灌入全部医院/科室/医生名（去重合并）"):
+            st.session_state.map_org = _import_all_org(df_std, '', _reset=True)
             st.rerun()
     with btn_col2:
         if st.button("重置机构/人员映射为默认", key="reset_org"):
@@ -207,9 +202,9 @@ with mc[1]:
             st.rerun()
 
 # 清洗后规模预览（随上方映射实时更新）
-_org_h, _org_d, _org_c = split_org_map(st.session_state.map_org)
-_im, _dm, _hm, _cm = (C.parse_map(st.session_state.map_ind), C.parse_map(_org_d),
-                      C.parse_map(_org_h), C.parse_map(_org_c))
+_org_map = C.parse_map(st.session_state.map_org)
+_im = C.parse_map(st.session_state.map_ind)
+_hm = _dm = _cm = _org_map
 _n_ind = df_std['适应症'].map(lambda v: C._normalize_value(v, _im, True)).nunique()
 _n_hosp = df_std['医疗单位'].map(lambda v: C._normalize_value(v, _hm)).nunique()
 _n_dept = df_std['处方科室'].map(lambda v: C._normalize_value(v, _dm)).nunique()
@@ -259,9 +254,9 @@ cfg = {
     'dedupFields': dedup_sel,
     'competitors': comps_sel,
     'indicationMap': st.session_state.map_ind,
-    'deptMap': _org_d,
-    'hospMap': _org_h,
-    'docMap': _org_c,
+    'deptMap': st.session_state.map_org,
+    'hospMap': st.session_state.map_org,
+    'docMap': st.session_state.map_org,
     'dept': None if dept_filter == '全部科室' else dept_filter,
 }
 
