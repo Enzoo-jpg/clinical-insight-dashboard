@@ -136,6 +136,47 @@ def normalize_series(series, mapping, is_indication=False):
     return series.astype(object).where(series.notna(), None).map(cache)
 
 
+# ---------------------------------------------------------------- 组合映射（医院+科室+医生 整体）
+COMBO_SEP = '\t'  # 组合内 医院/科室/医生 的分隔符
+DEFAULT_COMBO_MAP = (
+    "# 医院+科室+医生 组合映射：底表里所有 医院|科室|医生 唯一组合会列在下面（用 Tab 分隔）\n"
+    "# 同一组变体：把右侧改成目标标准组合即可整体归并\n"
+    "# 例如：\n"
+    "# 成都市第一人民医院\\t风湿免疫科\\t雷丽华 = 成都市第一人民医院\\t血液风湿免疫科\\t雷丽华\n"
+)
+
+
+def parse_combo_map(text):
+    """解析 `医院\\t科室\\t医生 = 医院\\t科室\\t医生` 格式 → {(h0,d0,c0): (h1,d1,c1)}"""
+    out = {}
+    for line in (text or '').split('\n'):
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        left, right = s.split('=', 1)
+        lk = tuple(x.strip() for x in left.split(COMBO_SEP))
+        rk = tuple(x.strip() for x in right.split(COMBO_SEP))
+        if len(lk) == 3 and len(rk) == 3:
+            out[lk] = rk
+    return out
+
+
+def _apply_combo_map(d, combo_map):
+    """把 (医院, 科室, 医生) 三列按 combo_map 整体归一；无匹配则原样"""
+    if not combo_map:
+        return d
+    # 用 tuple key 缓存，再 map
+    keys = list(zip(d['医疗单位'].astype(str), d['处方科室'].astype(str), d['处方医生'].astype(str)))
+    uniq = set(keys)
+    cache = {k: combo_map.get(k, k) for k in uniq}
+    norm = [cache[k] for k in keys]
+    d = d.copy()
+    d['医疗单位'] = [k[0] for k in norm]
+    d['处方科室'] = [k[1] for k in norm]
+    d['处方医生'] = [k[2] for k in norm]
+    return d
+
+
 def shift_months(ym, delta):
     y, m = [int(x) for x in ym.split('-')]
     idx = (y * 12 + (m - 1)) + delta
@@ -217,6 +258,8 @@ def _prep_dataframe(df, cfg):
     d['处方科室'] = normalize_series(d['处方科室'], dept_map)
     d['医疗单位'] = normalize_series(d['医疗单位'], hosp_map)
     d['处方医生'] = normalize_series(d['处方医生'], doc_map)
+    # 组合级归一（在单字段归一之后、_pkey 之前）
+    d = _apply_combo_map(d, parse_combo_map(cfg.get('comboMap', '')))
     d['_ym'] = d['销售日期'].map(to_ym)
     d['_qty'] = d['销量数量'].map(to_qty)
     dedup = cfg.get('dedupFields') or ['oneid']
