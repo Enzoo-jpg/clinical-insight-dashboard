@@ -27,7 +27,6 @@ def _init_state():
     ss = st.session_state
     ss.setdefault('raw_df', None)
     ss.setdefault('map_ind', C.DEFAULT_IND_MAP)
-    ss.setdefault('map_org', DEFAULT_ORG_MAP)
     ss.setdefault('map_combo', C.DEFAULT_COMBO_MAP)
 
 
@@ -173,12 +172,12 @@ st.success(f"已读取 {len(raw_df):,} 行 · 列：{'、'.join(map(str, raw_df.
 
 # ========================================================= 2. 数据清洗映射
 st.header("2. 数据清洗映射（先清洗，再选适应症范围）")
-st.caption("✅ 上传底表后，下方三个清洗框的**原始值已自动导入**，无需手动点击任何按钮。"
+st.caption("✅ 上传底表后，下方「适应症映射」「组合映射」两个清洗框的**原始值已自动导入**，无需手动点击任何按钮。"
            "直接在框里把「标准名」改成你想要的归并结果即可；只有想清空重灌时才用框下方的按钮。")
 auto = C.auto_map_columns(list(raw_df.columns))
 st.caption("系统已按列名自动识别标准字段（销售日期/医疗单位/处方科室/处方医生/通用名/适应症/销量数量），无需手动映射列。"
-           "请在下方对原始值做归并清洗：**关键字=标准名，每行一条**；同一标准名可有多条关键字。"
-           "把同一适应症的多种写法归到一个标准名，医院 / 科室 / 医生同理（医生按 医院+医生 区分同名）。")
+           "请在下方做归并清洗：① **适应症** 用「关键字=标准名」；② **医院+科室+医生** 用下方「组合映射」（Tab 分隔三段，"
+           "可整体归并同名变体，空段=通配可批量改名）。")
 
 missing = [r for r in C.REQ if r not in auto]
 if missing:
@@ -209,47 +208,44 @@ for std_col, label in [('适应症', '适应症'), ('医疗单位', '医院'), (
     elif df_std[std_col].dropna().astype(str).str.strip().eq('').all():
         st.warning(f"⚠️ 「{label}」列识别成功但**全部为空**，自动导入将无内容。请检查底表该列是否有数据。")
 
-# 首次载入自动导入数据出现的全部值（仅补未覆盖）：适应症单独，机构/人员（医院+科室+医生）合并为一个框
+# 同名医生跨科室探查：同一医院、同一医生名出现在多个科室 → 列出供判断「合并 / 两个同名医生」
+if all(c in df_std.columns for c in ('医疗单位', '处方科室', '处方医生')):
+    _g = (df_std.groupby(['医疗单位', '处方医生'], sort=False)
+          .agg(科室数=('处方科室', lambda s: len({x.strip() for x in s.dropna().astype(str) if x.strip()})),
+               科室列表=('处方科室', lambda s: '、'.join(sorted({x.strip() for x in s.dropna().astype(str) if x.strip()}))),
+               记录数=('处方科室', 'size'))
+          .reset_index())
+    _conflict = _g[_g['科室数'] > 1].sort_values(['医疗单位', '记录数'], ascending=[True, False])
+    if not _conflict.empty:
+        st.subheader("🔍 同名医生跨科室探查（请判断：合并 / 两个同名医生）")
+        st.caption(f"共 **{len(_conflict)}** 位医生：同一医院、同一医生名出现在 ≥2 个科室。"
+                   "确认是同一人就到下方「组合映射」里把对应行改成同一标准科室；若实为两人同名则无需处理。")
+        st.dataframe(_conflict.rename(columns={'医疗单位': '医院', '处方医生': '医生'}),
+                     width='stretch', hide_index=True, height=300)
+    else:
+        st.success("✅ 未检测到「同一医院同一医生出现在多个科室」的情况，无需特别处理跨科室同名。")
+
+# 首次载入自动导入数据出现的全部值（仅补未覆盖）：适应症单独 + 医院+科室+医生组合
 if not st.session_state.get('_auto_imported'):
     st.session_state.map_ind = _import_all_values(df_std, '适应症', st.session_state.map_ind, is_ind=True)
-    st.session_state.map_org = _import_all_org(df_std, st.session_state.map_org)
-    st.session_state.map_combo = _import_all_combo(df_std, st.session_state.map_combo, _apply_org=True)
+    st.session_state.map_combo = _import_all_combo(df_std, st.session_state.map_combo, _apply_org=False)
     st.session_state['_auto_imported'] = True
 
-mc = st.columns(2)
-with mc[0]:
-    st.markdown("**适应症归并映射**（如 皮科/关节/消化 → 标准适应症）")
-    st.session_state.map_ind = st.text_area(
-        "适应症映射", value=st.session_state.map_ind, height=320, label_visibility="collapsed",
-        help="关键字=标准名，每行一条；同一标准名可有多条关键字。")
-    if st.button("重置适应症映射为默认", key="reset_ind"):
-        st.session_state.map_ind = C.DEFAULT_IND_MAP
-        st.rerun()
-with mc[1]:
-    st.markdown("**医院 / 科室 / 医生 清洗映射（整体同步）**")
-    st.caption("本框的 `关键字=标准名` 规则会**同时**清洗 医院、科室、医生 三个字段。"
-               "例如 `A院 = A医院` 既修正医院，也修正科室/医生里出现的同名；`张伟(主任) = 张伟` 同理。"
-               "⚠️ 因规则三字段共享，关键字建议写得**具体**，避免误伤其他字段（如别用 `人民` 这种短词，会命中「德阳市人民医院」）。")
-    st.session_state.map_org = st.text_area(
-        "机构与人员映射", value=st.session_state.map_org, height=320, label_visibility="collapsed",
-        help="关键字=标准名，每行一条；同一标准名可有多条关键字。规则同步应用于医院/科室/医生。")
-    btn_col1, btn_col2 = st.columns([1, 1])
-    with btn_col1:
-        if st.button("🔄 重新扫描底表，导入全部原始值", key="rescan_org",
-                     help="清空本框内已有规则，从底表重新灌入全部医院/科室/医生名（去重合并）"):
-            st.session_state.map_org = _import_all_org(df_std, '', _reset=True)
-            st.rerun()
-    with btn_col2:
-        if st.button("重置机构/人员映射为默认", key="reset_org"):
-            st.session_state.map_org = DEFAULT_ORG_MAP
-            st.rerun()
-
+# ① 适应症归并映射
+st.markdown("**① 适应症归并映射**（如 皮科/关节/消化 → 标准适应症）")
+st.session_state.map_ind = st.text_area(
+    "适应症映射", value=st.session_state.map_ind, height=300, label_visibility="collapsed",
+    help="关键字=标准名，每行一条；同一标准名可多条关键字。")
+if st.button("重置适应症映射为默认", key="reset_ind"):
+    st.session_state.map_ind = C.DEFAULT_IND_MAP
+    st.rerun()
 # 医院+科室+医生 组合映射（解决同一组变体：血液风湿免疫科 vs 风湿免疫科 同一医院同一医生）
 with st.expander("🧩 医院+科室+医生 组合映射（按组合整体归并变体，如「风湿免疫科」→「血液风湿免疫科」）", expanded=True):
     st.caption("底表里所有 (医院, 科室, 医生) 唯一组合按出现频次列在下方（用 **Tab** 分隔三段）。"
                "如同一组数据出现变体（如 `成都市第一人民医院\\t风湿免疫科\\t雷丽华` 与 `成都市第一人民医院\\t血液风湿免疫科\\t雷丽华`），"
                "**只需改其中一行的右侧标准组合**，系统就会把对应行归并到同一标准组。"
                "格式：`医院\\t科室\\t医生 = 标准医院\\t标准科室\\t标准医生`（每行一条）。")
+    st.caption("💡 组合映射支持「通配」：规则里某一段留空 = 该段任意值都改。例如把某医院所有组合统一改名，只需写医院名、科室与医生两段留空即可，无需逐条写。")
     st.session_state.map_combo = st.text_area(
         "组合映射", value=st.session_state.map_combo, height=240, label_visibility="collapsed",
         help="医院\\t科室\\t医生 = 标准医院\\t标准科室\\t标准医生；每行一条；按组合整体归并变体。")
@@ -264,16 +260,13 @@ with st.expander("🧩 医院+科室+医生 组合映射（按组合整体归并
             st.session_state.map_combo = C.DEFAULT_COMBO_MAP
             st.rerun()
 
-# 清洗后规模预览（随上方映射实时更新）
-_org_map = C.parse_map(st.session_state.map_org)
+# 清洗后规模预览（按组合映射归一，随上方映射实时更新）
 _im = C.parse_map(st.session_state.map_ind)
-_hm = _dm = _cm = _org_map
-_n_ind = df_std['适应症'].map(lambda v: C._normalize_value(v, _im, True)).nunique()
-_n_hosp = df_std['医疗单位'].map(lambda v: C._normalize_value(v, _hm)).nunique()
-_n_dept = df_std['处方科室'].map(lambda v: C._normalize_value(v, _dm)).nunique()
-_n_doc = df_std['处方医生'].map(lambda v: C._normalize_value(v, _cm)).nunique()
-# 唯一组合数（按 (医院, 科室, 医生) 经单字段+组合映射归一后）
 _org_apply = C._apply_combo_map(df_std, C.parse_combo_map(st.session_state.map_combo))
+_n_ind = df_std['适应症'].map(lambda v: C._normalize_value(v, _im, True)).nunique()
+_n_hosp = _org_apply['医疗单位'].nunique()
+_n_dept = _org_apply['处方科室'].nunique()
+_n_doc = _org_apply['处方医生'].nunique()
 _n_combo = _org_apply.groupby(['医疗单位','处方科室','处方医生']).ngroups
 st.caption(f"清洗后规模预览：适应症 **{_n_ind}** 类 · 医院 **{_n_hosp}** 个 · 科室 **{_n_dept}** 个 · 医生 **{_n_doc}** 位 · "
            f"**医院+科室+医生 唯一组合 {_n_combo} 个**（随上方映射实时更新）。"
@@ -283,12 +276,10 @@ st.caption(f"清洗后规模预览：适应症 **{_n_ind}** 类 · 医院 **{_n_
 st.header("3. 计算配置")
 
 # 归一化后的候选值（供下拉/多选）
-ind_map = _im
-dept_map = _dm
-ind_vals = sorted({C._normalize_value(v, ind_map, is_indication=True)
+# 归一化后的候选值（供下拉/多选）
+ind_vals = sorted({C._normalize_value(v, _im, is_indication=True)
                    for v in df_std['适应症'].dropna().astype(str).unique() if str(v).strip() != ''})
-dept_vals = sorted({C._normalize_value(v, dept_map)
-                    for v in df_std['处方科室'].dropna().astype(str).unique() if str(v).strip() != ''})
+dept_vals = sorted({str(v) for v in _org_apply['处方科室'].dropna().astype(str).unique() if str(v).strip() != ''})
 prod_vals = sorted({str(v) for v in df_std['通用名'].dropna().astype(str).unique() if str(v).strip() != ''})
 
 cc = st.columns(5)
@@ -321,9 +312,6 @@ cfg = {
     'dedupFields': dedup_sel,
     'competitors': comps_sel,
     'indicationMap': st.session_state.map_ind,
-    'deptMap': st.session_state.map_org,
-    'hospMap': st.session_state.map_org,
-    'docMap': st.session_state.map_org,
     'comboMap': st.session_state.map_combo,
     'dept': None if dept_filter == '全部科室' else dept_filter,
 }
