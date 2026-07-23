@@ -150,7 +150,7 @@ def parse_combo_map(text):
     """解析 `医院\\t科室\\t医生 = 医院\\t科室\\t医生` 格式 → {(h0,d0,c0): (h1,d1,c1)}"""
     out = {}
     for line in (text or '').split('\n'):
-        s = line.strip()
+        s = line.rstrip('\r\n').strip(' ')  # 只去换行/首尾空格，保留 tab（末尾空段是通配写法的一部分）
         if not s or s.startswith('#') or '=' not in s:
             continue
         left, right = s.split('=', 1)
@@ -162,13 +162,37 @@ def parse_combo_map(text):
 
 
 def _apply_combo_map(d, combo_map):
-    """把 (医院, 科室, 医生) 三列按 combo_map 整体归一；无匹配则原样"""
+    """把 (医院, 科室, 医生) 三列按 combo_map 整体归一；无匹配则原样。
+
+    规则支持「通配」：左键任一段留空(``) 表示「该段任意值均匹配」，
+    右键对应段留空表示「保留原值」。例如：
+      `成都市第一人民医院\t\t = 成都市第一人民医院(天府院区)\t\t`
+      会把该医院的所有组合统一改名，无需逐条写。
+    匹配优先级：完全匹配 > 通配符更少者 > 通配符更多者。
+    """
     if not combo_map:
         return d
-    # 用 tuple key 缓存，再 map
     keys = list(zip(d['医疗单位'].astype(str), d['处方科室'].astype(str), d['处方医生'].astype(str)))
     uniq = set(keys)
-    cache = {k: combo_map.get(k, k) for k in uniq}
+    exact = {}
+    wild = []
+    for lk, rk in combo_map.items():
+        n = sum(1 for x in lk if x == '')
+        if n == 0:
+            exact[lk] = rk
+        else:
+            wild.append((lk, rk, n))
+    wild.sort(key=lambda t: t[2])  # 通配符越少越精确，优先匹配
+
+    def resolve(k):
+        if k in exact:
+            return exact[k]
+        for lk, rk, _ in wild:
+            if all(lk[i] == '' or lk[i] == k[i] for i in range(3)):
+                return tuple(rk[i] if rk[i] != '' else k[i] for i in range(3))
+        return k
+
+    cache = {k: resolve(k) for k in uniq}
     norm = [cache[k] for k in keys]
     d = d.copy()
     d['医疗单位'] = [k[0] for k in norm]
@@ -362,9 +386,10 @@ def merge_trend(curr, prev):
     merged = c.merge(p, on=['hospital', 'dept', 'doctor'], how='outer', indicator=True)
     has_prev = merged['prevBoxes'].notna()
     only_prev = (merged['_merge'] == 'right_only').to_numpy()
-    # 仅上期出现（流失）：boxes/patients 沿用上期值（同原 JS ...p）
-    merged.loc[only_prev, 'boxes'] = merged.loc[only_prev, 'prevBoxes']
-    merged.loc[only_prev, 'patients'] = merged.loc[only_prev, 'prevPatients']
+    # 仅上期出现（流失）：boxes/patients 沿用上期值（同原 JS ...p）；仅当有流失行时才赋值
+    if only_prev.any():
+        merged.loc[only_prev, 'boxes'] = merged.loc[only_prev, 'prevBoxes']
+        merged.loc[only_prev, 'patients'] = merged.loc[only_prev, 'prevPatients']
     merged['boxes'] = merged['boxes'].fillna(0.0)
     merged['patients'] = merged['patients'].fillna(0).astype(int)
     merged['prevBoxes'] = merged['prevBoxes'].fillna(0.0)
@@ -377,9 +402,10 @@ def merge_trend(curr, prev):
     trend[delta > 0] = '上升'
     trend[(pbox > 0) & (box == 0)] = '流失'
     trend[(~has_prev.to_numpy()) & (box > 0)] = '新进'
-    # 只在上期出现：boxes 沿用上期值(>0)，delta=-prev, trend=流失（与原逻辑一致）
-    trend[only_prev] = '流失'
-    delta[only_prev] = -pbox[only_prev]
+    # 只在上期出现：box 沿用上期值(>0)，delta=-prev, trend=流失（与原逻辑一致）
+    if only_prev.any():
+        trend[only_prev] = '流失'
+        delta[only_prev] = -pbox[only_prev]
     merged['prevBoxes'] = js_round_series(pbox, 2)
     merged['delta'] = js_round_series(delta, 2)
     merged['trend'] = trend
